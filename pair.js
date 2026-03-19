@@ -1,104 +1,81 @@
+const { default: makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys");
+const qrcode = require("qrcode");
 const express = require("express");
+const router = express.Router();
 const fs = require("fs");
 const { exec } = require("child_process");
-let router = express.Router();
-const pino = require("pino");
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  delay,
-  makeCacheableSignalKeyStore,
-  Browsers,
-  jidNormalizedUser,
-} = require("@whiskeysockets/baileys");
-const { upload } = require("./mega");
+const { upload } = require("megajs"); // make sure you have megajs installed
 
-function removeFile(FilePath) {
-  if (!fs.existsSync(FilePath)) return false;
-  fs.rmSync(FilePath, { recursive: true, force: true });
+let qrImage = ""; // browser QR
+
+// utility function to generate random ID
+function randomMegaId(length = 8, numberLength = 5) {
+  const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  let result = "";
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  const number = Math.floor(Math.random() * Math.pow(10, numberLength));
+  return `${result}${number}`;
 }
 
-router.get("/", async (req, res) => {
-  let num = req.query.number;
-  async function RobinPair() {
-    const { state, saveCreds } = await useMultiFileAuthState(`./session`);
-    try {
-      let RobinPairWeb = makeWASocket({
-        auth: {
-          creds: state.creds,
-          keys: makeCacheableSignalKeyStore(
-            state.keys,
-            pino({ level: "fatal" }).child({ level: "fatal" })
-          ),
-        },
-        printQRInTerminal: false,
-        logger: pino({ level: "fatal" }).child({ level: "fatal" }),
-        browser: Browsers.macOS("Safari"),
-      });
+// delay helper
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-      if (!RobinPairWeb.authState.creds.registered) {
-        await delay(1500);
-        num = num.replace(/[^0-9]/g, "");
-        const code = await RobinPairWeb.requestPairingCode(num);
-        if (!res.headersSent) {
-          await res.send({ code });
+// remove session folder
+async function removeFile(path) {
+  if (fs.existsSync(path)) {
+    fs.rmSync(path, { recursive: true, force: true });
+  }
+}
+
+// main function
+async function RobinPair(user_jid) {
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState("./session");
+
+    const RobinPairWeb = makeWASocket({
+      auth: state,
+      printQRInTerminal: true, // terminal QR
+    });
+
+    RobinPairWeb.ev.on("creds.update", saveCreds);
+
+    RobinPairWeb.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
+      try {
+        if (qr) {
+          qrImage = await qrcode.toDataURL(qr); // browser-friendly QR
+          console.log("📌 Scan this QR in your phone:");
+          console.log(qrImage);
         }
-      }
 
-      RobinPairWeb.ev.on("creds.update", saveCreds);
-      RobinPairWeb.ev.on("connection.update", async (s) => {
-        const { connection, lastDisconnect } = s;
         if (connection === "open") {
-          try {
-            await delay(10000);
-            const sessionPrabath = fs.readFileSync("./session/creds.json");
+          console.log("✅ WhatsApp Connected!");
 
-            const auth_path = "./session/";
-            const user_jid = jidNormalizedUser(RobinPairWeb.user.id);
+          // Upload session to Mega.nz
+          const auth_path = "./session/";
+          const mega_url = await upload(
+            fs.createReadStream(auth_path + "creds.json"),
+            `${randomMegaId()}.json`
+          );
 
-            function randomMegaId(length = 6, numberLength = 4) {
-              const characters =
-                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-              let result = "";
-              for (let i = 0; i < length; i++) {
-                result += characters.charAt(
-                  Math.floor(Math.random() * characters.length)
-                );
-              }
-              const number = Math.floor(
-                Math.random() * Math.pow(10, numberLength)
-              );
-              return `${result}${number}`;
-            }
+          const string_session = mega_url.replace("https://mega.nz/file/", "");
+          const sid = `*MALSHAN [The powerful WA BOT]*\n\n👉 ${string_session} 👈\n\n*Copy this ID into config.js*\n\n*wa.me/message/WKGLBR2PCETWD1*\n\n*Join group: https://chat.whatsapp.com/GAOhr0qNK7KEvJwbenGivZ*`;
+          const mg = `🛑 *Do not share this code to anyone* 🛑`;
 
-            const mega_url = await upload(
-              fs.createReadStream(auth_path + "creds.json"),
-              `${randomMegaId()}.json`
-            );
-
-            const string_session = mega_url.replace(
-              "https://mega.nz/file/",
-              ""
-            );
-
-            const sid = `*MALSHAN [The powerful WA BOT]*\n\n👉 ${string_session} 👈\n\n*This is the your Session ID, copy this id and paste into config.js file*\n\n*You can ask any question using this link*\n\n*wa.me/message/WKGLBR2PCETWD1*\n\n*You can join my whatsapp group*\n\n*https://chat.whatsapp.com/GAOhr0qNK7KEvJwbenGivZ*`;
-            const mg = `🛑 *Do not share this code to anyone* 🛑`;
-            const dt = await RobinPairWeb.sendMessage(user_jid, {
-              image: {
-                url: "https://raw.githubusercontent.com/Dark-Robin/Bot-Helper/refs/heads/main/autoimage/Bot%20robin%20WP.jpg",
-              },
-              caption: sid,
-            });
-            const msg = await RobinPairWeb.sendMessage(user_jid, {
-              text: string_session,
-            });
-            const msg1 = await RobinPairWeb.sendMessage(user_jid, { text: mg });
-          } catch (e) {
-            exec("pm2 restart prabath");
-          }
+          await RobinPairWeb.sendMessage(user_jid, {
+            image: {
+              url: "https://raw.githubusercontent.com/Dark-Robin/Bot-Helper/refs/heads/main/autoimage/Bot%20robin%20WP.jpg",
+            },
+            caption: sid,
+          });
+          await RobinPairWeb.sendMessage(user_jid, { text: string_session });
+          await RobinPairWeb.sendMessage(user_jid, { text: mg });
 
           await delay(100);
-          return await removeFile("./session");
+          await removeFile("./session");
           process.exit(0);
         } else if (
           connection === "close" &&
@@ -107,25 +84,24 @@ router.get("/", async (req, res) => {
           lastDisconnect.error.output.statusCode !== 401
         ) {
           await delay(10000);
-          RobinPair();
+          RobinPair(user_jid);
         }
-      });
-    } catch (err) {
-      exec("pm2 restart Robin-md");
-      console.log("service restarted");
-      RobinPair();
-      await removeFile("./session");
-      if (!res.headersSent) {
-        await res.send({ code: "Service Unavailable" });
+      } catch (e) {
+        console.log("Error inside connection.update:", e);
+        exec("pm2 restart Robin-md");
       }
-    }
+    });
+  } catch (err) {
+    console.log("Service error:", err);
+    exec("pm2 restart Robin-md");
+    await removeFile("./session");
   }
-  return await RobinPair();
-});
+}
 
-process.on("uncaughtException", function (err) {
-  console.log("Caught exception: " + err);
-  exec("pm2 restart Robin");
+// Express route to serve browser QR
+router.get("/", (req, res) => {
+  if (!qrImage) return res.send("QR not ready yet!");
+  res.send(`<img src="${qrImage}" />`);
 });
 
 module.exports = router;
